@@ -1,5 +1,6 @@
 import { User } from "../models/User.js";
 import { VerificationCode } from "../models/VerificationCode.js";
+import AdminUser from "../models/AdminUser.js";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { sendEmail } from "../utils/sendEmail.js";
@@ -7,15 +8,18 @@ import { sendEmail } from "../utils/sendEmail.js";
 // helper
 const make5 = () => String(crypto.randomInt(10000, 100000));
 const hash = (v) => bcrypt.hash(v, Number(process.env.TOKEN_SALT_ROUNDS || 12));
+const normalizeDomain = (v = "") => String(v || "").trim().toLowerCase();
 
 /**
  * GET /company/users?domain=metavative.com&q?=&role?=employee
  */
 export const listCompanyUsers = async (req, res) => {
   const { domain, q, role } = req.query || {};
-  if (!domain) return res.status(400).json({ message: "domain required" });
+  const normalizedDomain = normalizeDomain(domain);
+  if (!normalizedDomain)
+    return res.status(400).json({ message: "domain required" });
 
-  const where = { domain };
+  const where = { domain: normalizedDomain };
   if (role) where.role = role;
   if (q) {
     where.$or = [{ email: new RegExp(q, "i") }, { name: new RegExp(q, "i") }];
@@ -35,14 +39,38 @@ export const listCompanyUsers = async (req, res) => {
  */
 export const createCompanyUser = async (req, res) => {
   const { domain, name, email, role = "employee" } = req.body || {};
-  if (!domain || !email)
+  const normalizedDomain = normalizeDomain(domain);
+  if (!normalizedDomain || !email)
     return res.status(400).json({ message: "domain and email required" });
 
   let user = await User.findOne({ email });
   if (user) return res.status(409).json({ message: "Email already exists" });
 
+  // Enforce tenant seat limit configured by super admin.
+  const domainAdmin = await AdminUser.findOne({
+    domain: normalizedDomain,
+    licenseStatus: "active",
+  })
+    .sort("-createdAt")
+    .lean();
+  const seatLimit =
+    typeof domainAdmin?.seatLimit === "number" && domainAdmin.seatLimit > 0
+      ? domainAdmin.seatLimit
+      : null;
+  if (seatLimit) {
+    const usedSeats = await User.countDocuments({ domain: normalizedDomain });
+    if (usedSeats >= seatLimit) {
+      return res.status(409).json({
+        message: `Seat limit reached (${usedSeats}/${seatLimit}). Please contact super admin.`,
+        code: "SEAT_LIMIT_REACHED",
+        seatLimit,
+        usedSeats,
+      });
+    }
+  }
+
   user = await User.create({
-    domain,
+    domain: normalizedDomain,
     name: name || "",
     email,
     role,
@@ -77,9 +105,13 @@ export const createCompanyUser = async (req, res) => {
 export const updateCompanyUser = async (req, res) => {
   const { id } = req.params;
   const { domain, name, role, emailVerified, password } = req.body || {};
-  if (!domain) return res.status(400).json({ message: "domain required" });
+  const normalizedDomain = normalizeDomain(domain);
+  if (!normalizedDomain)
+    return res.status(400).json({ message: "domain required" });
 
-  const user = await User.findOne({ _id: id, domain }).select("+password");
+  const user = await User.findOne({ _id: id, domain: normalizedDomain }).select(
+    "+password"
+  );
   if (!user) return res.status(404).json({ message: "User not found" });
 
   if (typeof name === "string") user.name = name.trim();
@@ -98,9 +130,11 @@ export const updateCompanyUser = async (req, res) => {
 export const deleteCompanyUser = async (req, res) => {
   const { id } = req.params;
   const { domain } = req.query || {};
-  if (!domain) return res.status(400).json({ message: "domain required" });
+  const normalizedDomain = normalizeDomain(domain);
+  if (!normalizedDomain)
+    return res.status(400).json({ message: "domain required" });
 
-  const doc = await User.findOneAndDelete({ _id: id, domain });
+  const doc = await User.findOneAndDelete({ _id: id, domain: normalizedDomain });
   if (!doc) return res.status(404).json({ message: "User not found" });
   res.json({ message: "Deleted", id: doc._id });
 };

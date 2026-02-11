@@ -19,6 +19,39 @@ function extractEmails(values = []) {
   return [...found];
 }
 
+function queueSupportRequestEmail({ recipients, normalizedDomain, payload }) {
+  setImmediate(async () => {
+    try {
+      const html = `
+      <h2>Support request submitted</h2>
+      <p><b>Domain:</b> ${normalizedDomain}</p>
+      <p><b>Support type:</b> ${payload.supportType}</p>
+      <p><b>Check-in reference:</b> ${payload.checkinId || "N/A"}</p>
+      <p><b>Employee reference:</b> ${payload.employeeId || "Anonymous"}</p>
+      <h3>Contact details (optional)</h3>
+      <p><b>Name:</b> ${payload.name || "Not provided"}</p>
+      <p><b>Email:</b> ${payload.email || "Not provided"}</p>
+      <p><b>Phone:</b> ${payload.phone || "Not provided"}</p>
+      <h3>User message</h3>
+      <p>${
+        payload.safeMessage
+          ? payload.safeMessage.replace(/\n/g, "<br/>")
+          : "No additional message"
+      }</p>
+    `;
+
+      await sendEmail({
+        to: recipients.join(","),
+        subject: `Support request - ${normalizedDomain}`,
+        html,
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[support-request] email send failed:", e?.message);
+    }
+  });
+}
+
 export const submitSupportRequest = async (req, res) => {
   try {
     const {
@@ -81,26 +114,6 @@ export const submitSupportRequest = async (req, res) => {
     const email = String(contact?.email || "").trim();
     const phone = String(contact?.phone || "").trim();
 
-    const html = `
-      <h2>Support request submitted</h2>
-      <p><b>Domain:</b> ${normalizedDomain}</p>
-      <p><b>Support type:</b> ${supportType}</p>
-      <p><b>Check-in reference:</b> ${checkinId || "N/A"}</p>
-      <p><b>Employee reference:</b> ${employeeId || "Anonymous"}</p>
-      <h3>Contact details (optional)</h3>
-      <p><b>Name:</b> ${name || "Not provided"}</p>
-      <p><b>Email:</b> ${email || "Not provided"}</p>
-      <p><b>Phone:</b> ${phone || "Not provided"}</p>
-      <h3>User message</h3>
-      <p>${safeMessage ? safeMessage.replace(/\n/g, "<br/>") : "No additional message"}</p>
-    `;
-
-    await sendEmail({
-      to: finalRecipients.join(","),
-      subject: `Support request - ${normalizedDomain}`,
-      html,
-    });
-
     const created = await SupportRequest.create({
       domain: normalizedDomain,
       employeeId: String(employeeId || "").trim(),
@@ -116,6 +129,21 @@ export const submitSupportRequest = async (req, res) => {
       checkinId: String(checkinId || "").trim(),
       routedTo: finalRecipients.length,
       submittedAt: new Date(),
+    });
+
+    // Do not block API response on SMTP/email latency.
+    queueSupportRequestEmail({
+      recipients: finalRecipients,
+      normalizedDomain,
+      payload: {
+        supportType,
+        checkinId: String(checkinId || "").trim(),
+        employeeId: String(employeeId || "").trim(),
+        name,
+        email,
+        phone,
+        safeMessage,
+      },
     });
 
     return res.status(200).json({

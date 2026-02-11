@@ -30,6 +30,11 @@ const AdminUserSchema = new mongoose.Schema(
     },
     issuedAt: { type: Date, default: Date.now },
     expiresAt: { type: Date },
+    seatLimit: {
+      type: Number,
+      default: null, // null means unlimited seats
+      min: 1,
+    },
 
     // audit
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

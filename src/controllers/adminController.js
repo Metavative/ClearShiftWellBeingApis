@@ -7,8 +7,16 @@ import { generateLicenseKey } from "../utils/license.js";
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const phoneRe = /^[0-9+\-() ]{6,20}$/;
 
+function parseSeatLimit(input) {
+  if (input === undefined || input === null || input === "") return null;
+  const n = Number(input);
+  if (!Number.isInteger(n) || n < 1) return NaN;
+  return n;
+}
+
 export const createAdmin = asyncHandler(async (req, res) => {
-  const { firstName, lastName, email, phone, domain } = req.body || {};
+  const { firstName, lastName, email, phone, domain, seatLimit } =
+    req.body || {};
   if (!firstName || !lastName || !email || !domain) {
     return res
       .status(400)
@@ -18,6 +26,13 @@ export const createAdmin = asyncHandler(async (req, res) => {
     return res.status(400).json({ message: "Invalid email" });
   if (phone && !phoneRe.test(phone))
     return res.status(400).json({ message: "Invalid phone number" });
+
+  const parsedSeatLimit = parseSeatLimit(seatLimit);
+  if (Number.isNaN(parsedSeatLimit)) {
+    return res
+      .status(400)
+      .json({ message: "seatLimit must be a positive integer" });
+  }
 
   // find verified domain
   const dom = await DomainVerification.findOne({ domain, status: "verified" });
@@ -39,6 +54,7 @@ export const createAdmin = asyncHandler(async (req, res) => {
     licenseKey,
     licenseStatus: "active",
     issuedAt: new Date(),
+    seatLimit: parsedSeatLimit,
     // optional: expiresAt: new Date(Date.now() + 365*864e5),
     createdBy: req.user?._id,
   });
@@ -95,7 +111,7 @@ export const getAdmin = asyncHandler(async (req, res) => {
 });
 
 export const updateAdmin = asyncHandler(async (req, res) => {
-  const { firstName, lastName, email, phone } = req.body || {};
+  const { firstName, lastName, email, phone, seatLimit } = req.body || {};
   const doc = await AdminUser.findById(req.params.id);
   if (!doc) return res.status(404).json({ message: "Admin not found" });
 
@@ -110,6 +126,15 @@ export const updateAdmin = asyncHandler(async (req, res) => {
     if (!phoneRe.test(phone))
       return res.status(400).json({ message: "Invalid phone number" });
     doc.phone = phone;
+  }
+  if (typeof seatLimit !== "undefined") {
+    const parsedSeatLimit = parseSeatLimit(seatLimit);
+    if (Number.isNaN(parsedSeatLimit)) {
+      return res
+        .status(400)
+        .json({ message: "seatLimit must be a positive integer" });
+    }
+    doc.seatLimit = parsedSeatLimit;
   }
 
   doc.updatedBy = req.user?._id;
