@@ -7,6 +7,7 @@ import { env } from "./config/env.js";
 import { connectDB } from "./config/db.js";
 import routes from "./routes/index.js";
 import { notFound, errorHandler } from "./middleware/errorHandler.js";
+import { startWeeklyReportJob } from "./jobs/weeklyReportJob.js";
 
 const app = express();
 
@@ -58,6 +59,7 @@ app.use(errorHandler);
 
 // Start
 await connectDB();
+startWeeklyReportJob();
 app.listen(env.PORT, () =>
   console.log(`Server running on http://localhost:${env.PORT}`)
 );

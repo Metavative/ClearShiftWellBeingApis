@@ -8,6 +8,7 @@ import checkInResponseRoutes from "./checkInResponseRoutes.js";
 import companyUserRoutes from "./companyUserRoutes.js";
 import reportRoutes from "./reportRoutes.js";
 import contentRoutes from "./contentRoutes.js";
+import supportRequestRoutes from "./supportRequestRoutes.js";
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use("/checkin-responses", checkInResponseRoutes);
 router.use("/checkin", checkInRoutes);
 router.use("/company/users", companyUserRoutes);
 router.use("/reports", reportRoutes);
+router.use("/support-request", supportRequestRoutes);
 
 export default router;

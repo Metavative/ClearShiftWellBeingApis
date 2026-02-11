@@ -1,8 +1,15 @@
 import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import isoWeek from "dayjs/plugin/isoWeek.js";
 import CheckInResponse from "../models/CheckInResponse.js";
+import AdminUser from "../models/AdminUser.js";
 import PDFDocument from "pdfkit";
+import { sendEmail } from "../utils/sendEmail.js";
 
-function answerSeverity(option, isPositive = true) {
+dayjs.extend(utc);
+dayjs.extend(isoWeek);
+
+function answerSeverity(option = "", isPositive = true) {
   const t = String(option || "").toLowerCase();
   const yes = t.includes("yes");
   const no = t.includes("no");
@@ -14,113 +21,101 @@ function answerSeverity(option, isPositive = true) {
   return "amber";
 }
 
-export async function weeklyReport(req, res) {
-  const { domain } = req.query;
-  if (!domain) return res.status(400).json({ message: "domain required" });
+const THEME_KEYWORDS = [
+  "fatigue",
+  "workload",
+  "support",
+  "stress",
+  "communication",
+  "sleep",
+  "manager",
+  "safety",
+  "burnout",
+  "team",
+];
 
-  const end = dayjs().endOf("isoWeek");
-  const start = end.subtract(6, "day").startOf("day");
+function collectThemes(answer = {}, counters = {}) {
+  const source = `${answer.question || ""} ${answer.description || ""}`.toLowerCase();
+  for (const key of THEME_KEYWORDS) {
+    if (source.includes(key)) counters[key] = (counters[key] || 0) + 1;
+  }
+}
+
+async function buildWeeklySummary(domain, { start, end } = {}) {
+  const endAt = end ? dayjs(end).endOf("day") : dayjs().endOf("isoWeek");
+  const startAt = start
+    ? dayjs(start).startOf("day")
+    : endAt.subtract(6, "day").startOf("day");
 
   const rows = await CheckInResponse.find({
     domain,
-    createdAt: { $gte: start.toDate(), $lte: end.toDate() },
+    createdAt: { $gte: startAt.toDate(), $lte: endAt.toDate() },
   }).lean();
 
-  let red = 0,
-    amber = 0,
-    green = 0,
-    total = 0;
-  const themes = {};
+  let red = 0;
+  let amber = 0;
+  let green = 0;
+  let total = 0;
+  const themeCounters = {};
 
-  for (const r of rows) {
+  for (const row of rows) {
     total += 1;
     let sev = "amber";
-    for (const a of r.answers || []) {
-      const s = answerSeverity(a.option, a.isPositive ?? true);
+
+    for (const answer of row.answers || []) {
+      const s = answerSeverity(answer.option, answer.isPositive ?? true);
       if (s === "red") {
         sev = "red";
         break;
       }
       if (s === "green" && sev !== "red") sev = "green";
     }
-    if (sev === "red") red++;
-    else if (sev === "green") green++;
-    else amber++;
 
-    // crude theme extraction from free-text description
-    for (const a of r.answers || []) {
-      const d = (a.description || "").toLowerCase();
-      if (!d) continue;
-      [
-        "fatigue",
-        "workload",
-        "support",
-        "stress",
-        "communication",
-        "sleep",
-        "manager",
-      ].forEach((k) => {
-        if (d.includes(k)) themes[k] = (themes[k] || 0) + 1;
-      });
-    }
+    if (sev === "red") red += 1;
+    else if (sev === "green") green += 1;
+    else amber += 1;
+
+    for (const answer of row.answers || []) collectThemes(answer, themeCounters);
   }
 
-  const sortedThemes = Object.entries(themes)
+  const themes = Object.entries(themeCounters)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 4)
-    .map(([k, v]) => ({ topic: k, count: v }));
+    .slice(0, 3)
+    .map(([topic, count]) => ({ topic, count }));
 
-  res.json({
+  return {
     domain,
-    weekEnding: end.format("YYYY-MM-DD"),
-    window: { start: start.toISOString(), end: end.toISOString() },
+    weekEnding: endAt.format("YYYY-MM-DD"),
+    window: { start: startAt.toISOString(), end: endAt.toISOString() },
     total,
     red,
     amber,
     green,
-    themes: sortedThemes,
-  });
+    themes,
+  };
+}
+
+export async function weeklyReport(req, res) {
+  const { domain, start, end } = req.query || {};
+  if (!domain) return res.status(400).json({ message: "domain required" });
+
+  const data = await buildWeeklySummary(domain, { start, end });
+  return res.json(data);
 }
 
 export async function weeklyReportPdf(req, res) {
-  const { domain } = req.query;
+  const { domain, start, end } = req.query || {};
   if (!domain) return res.status(400).json({ message: "domain required" });
 
-  // Reuse JSON aggregation
-  req.query.limit = undefined;
-  const end = dayjs().endOf("isoWeek");
-  const start = end.subtract(6, "day").startOf("day");
+  const data = await buildWeeklySummary(domain, { start, end });
+  const weekEndLabel = dayjs(data.weekEnding).format("MMMM D, YYYY");
 
-  const rows = await CheckInResponse.find({
-    domain,
-    createdAt: { $gte: start.toDate(), $lte: end.toDate() },
-  }).lean();
-
-  let red = 0,
-    amber = 0,
-    green = 0,
-    total = 0;
-  for (const r of rows) {
-    total += 1;
-    let sev = "amber";
-    for (const a of r.answers || []) {
-      const s = answerSeverity(a.option, a.isPositive ?? true);
-      if (s === "red") {
-        sev = "red";
-        break;
-      }
-      if (s === "green" && sev !== "red") sev = "green";
-    }
-    if (sev === "red") red++;
-    else if (sev === "green") green++;
-    else amber++;
-  }
-
-  // Generate PDF
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="weekly-${domain}-${end.format("YYYYMMDD")}.pdf"`
+    `attachment; filename="weekly-${domain}-${dayjs(data.weekEnding).format(
+      "YYYYMMDD"
+    )}.pdf"`
   );
 
   const doc = new PDFDocument({ margin: 48 });
@@ -131,8 +126,8 @@ export async function weeklyReportPdf(req, res) {
     .moveDown(0.2)
     .fontSize(12)
     .fillColor("#666")
-    .text(`Domain: ${domain}`)
-    .text(`Week Ending: ${end.format("MMMM D, YYYY")}`)
+    .text(`Domain: ${data.domain}`)
+    .text(`Week Ending: ${weekEndLabel}`)
     .moveDown();
 
   doc
@@ -140,11 +135,21 @@ export async function weeklyReportPdf(req, res) {
     .fontSize(14)
     .text("Totals", { underline: true })
     .moveDown(0.5);
-  doc.text(`Total Submissions: ${total}`);
-  doc.fillColor("#DC3545").text(`Red (Concern): ${red}`);
-  doc.fillColor("#FFC107").text(`Amber (Caution): ${amber}`);
-  doc.fillColor("#28A745").text(`Green (Good): ${green}`);
+  doc.text(`Total Submissions: ${data.total}`);
+  doc.fillColor("#DC3545").text(`Red (Concern): ${data.red}`);
+  doc.fillColor("#FFC107").text(`Amber (Caution): ${data.amber}`);
+  doc.fillColor("#28A745").text(`Green (Good): ${data.green}`);
   doc.fillColor("#000").moveDown();
+
+  doc.fontSize(14).text("Top 3 Wellbeing Themes", { underline: true }).moveDown(0.5);
+  if (!data.themes.length) {
+    doc.fontSize(12).text("No recurring theme extracted this week.");
+  } else {
+    for (const t of data.themes) {
+      doc.fontSize(12).text(`- ${t.topic}: ${t.count}`);
+    }
+  }
+  doc.moveDown();
 
   doc.fontSize(14).text("Notes", { underline: true }).moveDown(0.5);
   doc
@@ -154,3 +159,71 @@ export async function weeklyReportPdf(req, res) {
 
   doc.end();
 }
+
+export async function weeklyReportEmail(req, res) {
+  try {
+    const { domain, start, end, to } = req.body || {};
+    if (!domain) return res.status(400).json({ message: "domain required" });
+
+    const data = await buildWeeklySummary(domain, { start, end });
+    const adminEmails = (
+      await AdminUser.find({ domain, licenseStatus: "active" })
+        .select("email")
+        .lean()
+    )
+      .map((a) => String(a.email || "").toLowerCase())
+      .filter(Boolean);
+
+    const extraRecipients = String(to || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    const recipients = [...new Set([...adminEmails, ...extraRecipients])];
+    if (!recipients.length) {
+      return res.status(422).json({
+        message: "No recipients configured for this domain",
+      });
+    }
+
+    const html = `
+      <h2>Weekly Wellbeing Summary</h2>
+      <p><b>Domain:</b> ${data.domain}</p>
+      <p><b>Week Ending:</b> ${data.weekEnding}</p>
+      <ul>
+        <li><b>Total submissions:</b> ${data.total}</li>
+        <li><b>Red:</b> ${data.red}</li>
+        <li><b>Amber:</b> ${data.amber}</li>
+        <li><b>Green:</b> ${data.green}</li>
+      </ul>
+      <h3>Top 3 themes</h3>
+      <ul>
+        ${
+          data.themes.length
+            ? data.themes.map((t) => `<li>${t.topic}: ${t.count}</li>`).join("")
+            : "<li>No recurring theme extracted this week.</li>"
+        }
+      </ul>
+      <p><i>This summary is anonymized and excludes personal identifiers.</i></p>
+    `;
+
+    await sendEmail({
+      to: recipients.join(","),
+      subject: `Weekly wellbeing summary - ${data.domain} - ${data.weekEnding}`,
+      html,
+    });
+
+    return res.json({
+      success: true,
+      message: "Weekly report email sent",
+      recipients: recipients.length,
+      summary: data,
+    });
+  } catch (e) {
+    return res.status(500).json({
+      message: e?.message || "Failed to send weekly report email",
+    });
+  }
+}
+
+export { buildWeeklySummary };

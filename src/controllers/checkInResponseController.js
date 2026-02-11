@@ -13,6 +13,20 @@ const transporter = nodemailer.createTransport({
     : undefined,
 });
 
+function optionMeansSupport(option = "") {
+  const text = String(option || "").toLowerCase().trim();
+  if (!text) return false;
+  if (text.includes("prefer not")) return false;
+  if (text.includes("no")) return false;
+  return (
+    text.includes("yes") ||
+    text.includes("help") ||
+    text.includes("support") ||
+    text.includes("need") ||
+    text.includes("contact")
+  );
+}
+
 /**
  * POST /checkin/responses
  * body: {
@@ -23,7 +37,13 @@ const transporter = nodemailer.createTransport({
  */
 export const submitCheckIn = async (req, res) => {
   try {
-    const { domain, employeeId, answers = [], meta } = req.body || {};
+    const {
+      domain,
+      employeeId,
+      answers = [],
+      meta,
+      supportRequested: supportRequestedInput,
+    } = req.body || {};
     if (
       !domain ||
       !employeeId ||
@@ -60,13 +80,21 @@ export const submitCheckIn = async (req, res) => {
         question: q.question,
         option: a.option,
         description: a.description || "",
+        isPositive: q.isPositive ?? true,
+        isSupport: q.isSupport ?? false,
       };
     });
+
+    const supportRequested =
+      typeof supportRequestedInput === "boolean"
+        ? supportRequestedInput
+        : normalized.some((a) => a.isSupport && optionMeansSupport(a.option));
 
     const doc = await CheckInResponse.create({
       domain,
       employeeId,
       answers: normalized,
+      supportRequested,
       meta: meta || {},
       submittedAt: new Date(),
     });
@@ -106,6 +134,7 @@ export const submitCheckIn = async (req, res) => {
       message: "Submitted",
       id: doc._id,
       submittedAt: doc.submittedAt,
+      supportRequested: doc.supportRequested,
     });
   } catch (e) {
     return res.status(400).json({ message: e?.message || "Submission error" });
@@ -115,15 +144,50 @@ export const submitCheckIn = async (req, res) => {
 /** GET /checkin/responses?domain=...&employeeId?=... */
 export const listResponses = async (req, res) => {
   try {
-    const { domain, employeeId } = req.query || {};
+    const { domain, employeeId, start, end, limit } = req.query || {};
     if (!domain) return res.status(400).json({ message: "domain required" });
 
     const where = { domain };
     if (employeeId) where.employeeId = employeeId;
+    if (start || end) {
+      where.submittedAt = {};
+      if (start) where.submittedAt.$gte = new Date(start);
+      if (end) where.submittedAt.$lte = new Date(end);
+    }
 
-    const items = await CheckInResponse.find(where).sort("-submittedAt").lean();
+    const limitNum = Math.min(500, Math.max(1, Number(limit) || 100));
+    const items = await CheckInResponse.find(where)
+      .sort("-submittedAt")
+      .limit(limitNum)
+      .lean();
     res.json(items);
   } catch (e) {
     res.status(500).json({ message: e?.message || "Failed to list responses" });
+  }
+};
+
+/** PATCH /checkin-responses/:id/ack */
+export const updateAckStatus = async (req, res) => {
+  try {
+    const { id } = req.params || {};
+    const { acked } = req.body || {};
+    if (typeof acked !== "boolean") {
+      return res.status(400).json({ message: "acked boolean is required" });
+    }
+
+    const doc = await CheckInResponse.findByIdAndUpdate(
+      id,
+      { acked, ackedAt: acked ? new Date() : null },
+      { new: true }
+    ).lean();
+
+    if (!doc) return res.status(404).json({ message: "Response not found" });
+    res.json({
+      id: doc._id,
+      acked: doc.acked,
+      ackedAt: doc.ackedAt,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e?.message || "Failed to update ack" });
   }
 };

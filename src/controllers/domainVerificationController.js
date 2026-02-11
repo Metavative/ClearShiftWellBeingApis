@@ -21,15 +21,21 @@ function randomToken() {
  * returns: { host, value, ttl, fqdn, recordType }
  */
 export const initiateVerification = asyncHandler(async (req, res) => {
-  const { domain, ttl } = req.body || {};
+  const { domain, ttl, host, token } = req.body || {};
   if (!domain || !domainRegex.test(domain)) {
     return res
       .status(400)
       .json({ message: "Provide a valid domain like example.com" });
   }
 
-  const host = VERIFY_HOST_PREFIX || "_gp-verify";
-  const value = randomToken();
+  const finalHost =
+    typeof host === "string" && host.trim()
+      ? host.trim()
+      : VERIFY_HOST_PREFIX || "_gp-verify";
+  const value =
+    typeof token === "string" && token.trim().startsWith("gp-verify=")
+      ? token.trim()
+      : randomToken();
   const finalTtl = Number(ttl) || Number(DEFAULT_TTL) || 3600;
 
   const expiresAt = new Date(
@@ -40,7 +46,7 @@ export const initiateVerification = asyncHandler(async (req, res) => {
     { domain },
     {
       domain,
-      host,
+      host: finalHost,
       ttl: finalTtl,
       token: value,
       status: "pending",
@@ -60,9 +66,10 @@ export const initiateVerification = asyncHandler(async (req, res) => {
       "TXT record generated. Add this to your DNS and then run the check endpoint.",
     recordType: "TXT",
     host,
+    host: finalHost,
     value,
     ttl: finalTtl,
-    fqdn: `${host}.${domain}`,
+    fqdn: `${finalHost}.${domain}`,
     domain: doc.domain,
     expiresAt: doc.expiresAt,
   });
@@ -143,22 +150,25 @@ export const checkVerification = asyncHandler(async (req, res) => {
 });
 
 export const previewVerification = asyncHandler(async (req, res) => {
-  const { domain, ttl } = req.body || {};
+  const { domain, ttl, host } = req.body || {};
   if (!domain || !domainRegex.test(domain)) {
     return res
       .status(400)
       .json({ message: "Provide a valid domain like example.com" });
   }
-  const host = VERIFY_HOST_PREFIX || "_gp-verify";
+  const finalHost =
+    typeof host === "string" && host.trim()
+      ? host.trim()
+      : VERIFY_HOST_PREFIX || "_gp-verify";
   const value = randomToken();
   const finalTtl = Number(ttl) || Number(DEFAULT_TTL) || 3600;
 
   return res.json({
     recordType: "TXT",
-    host,
+    host: finalHost,
     value,
     ttl: finalTtl,
-    fqdn: `${host}.${domain}`,
+    fqdn: `${finalHost}.${domain}`,
     domain,
   });
 });

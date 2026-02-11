@@ -2,17 +2,20 @@ import { PrivacyPolicyContent } from "../models/PrivacyPolicyContent.js";
 import { SupportToolContent } from "../models/SupportToolContent.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
+const normalizeDomain = (value = "") => String(value).trim().toLowerCase();
+
 // Get active privacy policy content for app
 export const getPrivacyPolicy = asyncHandler(async (req, res) => {
   const { domain } = req.query;
+  const normalizedDomain = normalizeDomain(domain);
 
-  if (!domain) {
+  if (!normalizedDomain) {
     return res.status(400).json({ message: "Domain is required" });
   }
 
   const policy = await PrivacyPolicyContent.findOne({
     isActive: true,
-    domain,
+    domain: normalizedDomain,
   });
 
   if (!policy) {
@@ -27,7 +30,10 @@ export const getPrivacyPolicy = asyncHandler(async (req, res) => {
 
 // Get all privacy policies (for superadmin)
 export const getAllPrivacyPolicies = asyncHandler(async (req, res) => {
-  const policies = await PrivacyPolicyContent.find({}).sort({
+  const requestedDomain = normalizeDomain(req.query?.domain);
+  const where = requestedDomain ? { domain: requestedDomain } : {};
+
+  const policies = await PrivacyPolicyContent.find(where).sort({
     createdAt: -1,
   });
 
@@ -41,6 +47,7 @@ export const getAllPrivacyPolicies = asyncHandler(async (req, res) => {
 // Create privacy policy content
 export const createPrivacyPolicy = asyncHandler(async (req, res) => {
   const { title, content, domain } = req.body;
+  const normalizedDomain = normalizeDomain(domain);
   const superAdminId = req.user?.id;
 
   if (!content) {
@@ -49,7 +56,7 @@ export const createPrivacyPolicy = asyncHandler(async (req, res) => {
     });
   }
 
-  if (!domain) {
+  if (!normalizedDomain) {
     return res.status(400).json({
       message: "Domain is required",
     });
@@ -57,14 +64,14 @@ export const createPrivacyPolicy = asyncHandler(async (req, res) => {
 
   // Deactivate any existing active policy for this domain and create new one
   await PrivacyPolicyContent.updateMany(
-    { isActive: true, domain },
+    { isActive: true, domain: normalizedDomain },
     { isActive: false }
   );
 
   const policy = new PrivacyPolicyContent({
     title: title || "Privacy Policy",
     content,
-    domain,
+    domain: normalizedDomain,
     isActive: true,
     updatedBy: superAdminId,
     version: 1,
@@ -82,7 +89,8 @@ export const createPrivacyPolicy = asyncHandler(async (req, res) => {
 // Update privacy policy content
 export const updatePrivacyPolicy = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { title, content } = req.body;
+  const { title, content, domain } = req.body;
+  const domainGuard = normalizeDomain(domain || req.query?.domain);
   const superAdminId = req.user?.id;
 
   if (!content) {
@@ -95,6 +103,9 @@ export const updatePrivacyPolicy = asyncHandler(async (req, res) => {
 
   if (!policy) {
     return res.status(404).json({ message: "Privacy policy not found" });
+  }
+  if (domainGuard && normalizeDomain(policy.domain) !== domainGuard) {
+    return res.status(403).json({ message: "Forbidden for this domain" });
   }
 
   // Update the policy
@@ -115,8 +126,9 @@ export const updatePrivacyPolicy = asyncHandler(async (req, res) => {
 // Delete privacy policy
 export const deletePrivacyPolicy = asyncHandler(async (req, res) => {
   const { id } = req.params;
-
-  const policy = await PrivacyPolicyContent.findByIdAndDelete(id);
+  const domainGuard = normalizeDomain(req.query?.domain || req.body?.domain);
+  const where = domainGuard ? { _id: id, domain: domainGuard } : { _id: id };
+  const policy = await PrivacyPolicyContent.findOneAndDelete(where);
 
   if (!policy) {
     return res.status(404).json({ message: "Privacy policy not found" });
@@ -131,14 +143,15 @@ export const deletePrivacyPolicy = asyncHandler(async (req, res) => {
 // Get active support tool content for app
 export const getSupportToolContent = asyncHandler(async (req, res) => {
   const { domain } = req.query;
+  const normalizedDomain = normalizeDomain(domain);
 
-  if (!domain) {
+  if (!normalizedDomain) {
     return res.status(400).json({ message: "Domain is required" });
   }
 
   const content = await SupportToolContent.findOne({
     isActive: true,
-    domain,
+    domain: normalizedDomain,
   });
 
   if (!content) {
@@ -153,7 +166,10 @@ export const getSupportToolContent = asyncHandler(async (req, res) => {
 
 // Get all support tool contents (for superadmin)
 export const getAllSupportToolContents = asyncHandler(async (req, res) => {
-  const contents = await SupportToolContent.find({}).sort({
+  const requestedDomain = normalizeDomain(req.query?.domain);
+  const where = requestedDomain ? { domain: requestedDomain } : {};
+
+  const contents = await SupportToolContent.find(where).sort({
     createdAt: -1,
   });
 
@@ -167,9 +183,10 @@ export const getAllSupportToolContents = asyncHandler(async (req, res) => {
 // Create support tool content
 export const createSupportToolContent = asyncHandler(async (req, res) => {
   const { tips, eap, hr, crisis, domain } = req.body;
+  const normalizedDomain = normalizeDomain(domain);
   const superAdminId = req.user?.sub || req.user?.id;
 
-  if (!domain) {
+  if (!normalizedDomain) {
     return res.status(400).json({
       message: "Domain is required",
     });
@@ -177,7 +194,7 @@ export const createSupportToolContent = asyncHandler(async (req, res) => {
 
   // Deactivate any existing active content for this domain and create new one
   await SupportToolContent.updateMany(
-    { isActive: true, domain },
+    { isActive: true, domain: normalizedDomain },
     { isActive: false }
   );
 
@@ -186,7 +203,7 @@ export const createSupportToolContent = asyncHandler(async (req, res) => {
     eap: eap || [],
     hr: hr || [],
     crisis: crisis || [],
-    domain,
+    domain: normalizedDomain,
     isActive: true,
     updatedBy: superAdminId,
     version: 1,
@@ -204,13 +221,17 @@ export const createSupportToolContent = asyncHandler(async (req, res) => {
 // Update support tool content
 export const updateSupportToolContent = asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { tips, eap, hr, crisis } = req.body;
+  const { tips, eap, hr, crisis, domain } = req.body;
+  const domainGuard = normalizeDomain(domain || req.query?.domain);
   const superAdminId = req.user?.sub || req.user?.id;
 
   const content = await SupportToolContent.findById(id);
 
   if (!content) {
     return res.status(404).json({ message: "Support tool content not found" });
+  }
+  if (domainGuard && normalizeDomain(content.domain) !== domainGuard) {
+    return res.status(403).json({ message: "Forbidden for this domain" });
   }
 
   // Update the content
@@ -234,8 +255,9 @@ export const updateSupportToolContent = asyncHandler(async (req, res) => {
 // Delete support tool content
 export const deleteSupportToolContent = asyncHandler(async (req, res) => {
   const { id } = req.params;
-
-  const content = await SupportToolContent.findByIdAndDelete(id);
+  const domainGuard = normalizeDomain(req.query?.domain || req.body?.domain);
+  const where = domainGuard ? { _id: id, domain: domainGuard } : { _id: id };
+  const content = await SupportToolContent.findOneAndDelete(where);
 
   if (!content) {
     return res.status(404).json({ message: "Support tool content not found" });
