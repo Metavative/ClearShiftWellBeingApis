@@ -4,10 +4,18 @@ import CheckInResponse from "../models/CheckInResponse.js";
 import AdminUser from "../models/AdminUser.js"; // your admin model (one admin per domain)
 import nodemailer from "nodemailer";
 
+const SMTP_CONNECTION_TIMEOUT_MS = Number(
+  process.env.SMTP_CONNECTION_TIMEOUT_MS || 5000
+);
+const SMTP_SOCKET_TIMEOUT_MS = Number(process.env.SMTP_SOCKET_TIMEOUT_MS || 8000);
+
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT || 587),
   secure: false,
+  connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+  greetingTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+  socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
   auth: process.env.SMTP_USER
     ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
     : undefined,
@@ -25,6 +33,42 @@ function optionMeansSupport(option = "") {
     text.includes("need") ||
     text.includes("contact")
   );
+}
+
+function queueAdminCheckinEmail({ domain, employeeId, submittedAt, normalized }) {
+  setImmediate(async () => {
+    try {
+      const admin = await AdminUser.findOne({ domain }).lean();
+      if (!admin?.email) return;
+
+      const lines = normalized
+        .map(
+          (a, i) =>
+            `${i + 1}. ${a.question}\n   → ${a.option}${
+              a.description ? `\n   • Note: ${a.description}` : ""
+            }`
+        )
+        .join("\n\n");
+
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || "no-reply@yourapp.com",
+        to: admin.email,
+        subject: `New Check-In — ${employeeId} (${domain})`,
+        text: `A new check-in was submitted.
+
+            Employee: ${employeeId}
+            Domain:   ${domain}
+            When:     ${new Date(submittedAt).toLocaleString()}
+
+            Answers:
+            ${lines}
+            `,
+      });
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Email send failed:", e?.message);
+    }
+  });
 }
 
 /**
@@ -99,36 +143,13 @@ export const submitCheckIn = async (req, res) => {
       submittedAt: new Date(),
     });
 
-    try {
-      const admin = await AdminUser.findOne({ domain }).lean();
-      if (admin?.email) {
-        const lines = normalized
-          .map(
-            (a, i) =>
-              `${i + 1}. ${a.question}\n   → ${a.option}${
-                a.description ? `\n   • Note: ${a.description}` : ""
-              }`
-          )
-          .join("\n\n");
-
-        await transporter.sendMail({
-          from: process.env.SMTP_FROM || "no-reply@yourapp.com",
-          to: admin.email,
-          subject: `New Check-In — ${employeeId} (${domain})`,
-          text: `A new check-in was submitted.
-
-            Employee: ${employeeId}
-            Domain:   ${domain}
-            When:     ${new Date(doc.submittedAt).toLocaleString()}
-
-            Answers:
-            ${lines}
-            `,
-        });
-      }
-    } catch (e) {
-      console.error("Email send failed:", e?.message);
-    }
+    // Do not block API response on SMTP/email latency.
+    queueAdminCheckinEmail({
+      domain,
+      employeeId,
+      submittedAt: doc.submittedAt,
+      normalized,
+    });
 
     res.json({
       message: "Submitted",
